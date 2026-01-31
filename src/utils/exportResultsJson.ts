@@ -1,6 +1,6 @@
 /**
  * Export local (browser) data to results.json
- * - localStorage: keys filtered by /(valley|volley)/i
+ * - localStorage: keys filtered by /(volley|volley)/i
  * - IndexedDB: dumps all databases + all object stores (best effort)
  *
  * This does NOT assume your app's schema; it exports raw data safely.
@@ -108,7 +108,7 @@ async function dumpIndexedDB() {
 
 function pickLikelyAppKeysFromLocalStorage() {
   const keys = Object.keys(localStorage);
-  const re = /(valley|volley)/i;
+  const re = /(volley|volley)/i;
   const picked = keys.filter((k) => re.test(k));
   // If none matched, keep it empty (do not guess).
   const dump: AnyObj = {};
