@@ -53,6 +53,7 @@ type Player = {
 type Match = {
   id: string
   date: string // yyyy-mm-dd
+  name?: string // ✅ 追加：試合に名前
   createdAt: number
   roster: {
     our: string[]
@@ -69,7 +70,7 @@ type BaseEvent = {
 type AttackEvent = BaseEvent & {
   kind: 'attack'
   attackType: 'spike'
-  spikePos?: SpikePos // ✅追加
+  spikePos?: SpikePos
   result: 'kill' | 'effective' | 'continue' | 'error'
 }
 
@@ -126,6 +127,10 @@ type View =
   | { name: 'player'; playerId: string }
 
 const LS_KEY = 'volley_app_db_v3'
+
+// ✅ 「選手を指定しない」用の疑似ID（自/相手）
+const ANON_OUR = '__anon_our__'
+const ANON_OPP = '__anon_opp__'
 
 function uid() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -256,7 +261,10 @@ function teamByRoster(m: Match) {
   return map
 }
 
+// ✅ 無指定IDもチーム判定できるように
 function getActorTeam(e: { actorId: string }, tmap: Map<string, TeamSide>) {
+  if (e.actorId === ANON_OUR) return 'our'
+  if (e.actorId === ANON_OPP) return 'opp'
   return tmap.get(e.actorId) ?? null
 }
 
@@ -264,7 +272,8 @@ function buildTimeline(m: Match, rallies: Rally[]) {
   const rs = rallies.slice().sort((a, b) => a.createdAt - b.createdAt)
   let our = 0
   let opp = 0
-  const out: { rally: Rally; scoreBefore: { our: number; opp: number }; scoreAfter: { our: number; opp: number } }[] = []
+  const out: { rally: Rally; scoreBefore: { our: number; opp: number }; scoreAfter: { our: number; opp: number } }[] =
+    []
   for (const r of rs) {
     const before = { our, opp }
     if (r.point === 'our') our += 1
@@ -289,7 +298,12 @@ function computePhase(scoreBefore: { our: number; opp: number }): Phase {
   return 'late'
 }
 
-function findReceiveQualityForSet(rally: Rally, setIndex: number, setterTeam: TeamSide, tmap: Map<string, TeamSide>): ReceiveQuality | null {
+function findReceiveQualityForSet(
+  rally: Rally,
+  setIndex: number,
+  setterTeam: TeamSide,
+  tmap: Map<string, TeamSide>,
+): ReceiveQuality | null {
   for (let i = setIndex - 1; i >= 0; i--) {
     const e = rally.events[i]
     if (e.kind !== 'receive' && e.kind !== 'dig') continue
@@ -327,6 +341,14 @@ function inferPointFromEvent(e: RallyEvent, actorTeam: TeamSide): TeamSide | nul
 
 const LEAD_LABEL: Record<LeadState, string> = { lead: 'リード', tie: '同点', behind: 'ビハインド' }
 const PHASE_LABEL: Record<Phase, string> = { early: '序盤', mid: '中盤', late: '終盤' }
+
+type InlineEventInput =
+  | Omit<AttackEvent, 'id' | 'actorId' | 'at'>
+  | Omit<ServeEvent, 'id' | 'actorId' | 'at'>
+  | Omit<BlockEvent, 'id' | 'actorId' | 'at'>
+  | Omit<ReceiveEvent, 'id' | 'actorId' | 'at'>
+  | Omit<DigEvent, 'id' | 'actorId' | 'at'>
+  | Omit<SetEvent, 'id' | 'actorId' | 'at'>
 
 export default function App() {
   const viewOnly = new URLSearchParams(location.search).get('view') === '1'
@@ -408,7 +430,13 @@ export default function App() {
 
   function addMatch() {
     if (viewOnly) return
-    const m: Match = { id: uid(), date: todayISO(), createdAt: Date.now(), roster: { our: [], opp: [] } }
+    const m: Match = {
+      id: uid(),
+      date: todayISO(),
+      name: '',
+      createdAt: Date.now(),
+      roster: { our: [], opp: [] },
+    }
     commit({ ...db, matches: [...db.matches, m] })
     setView({ name: 'match', matchId: m.id })
   }
@@ -428,6 +456,11 @@ export default function App() {
     commit({ ...db, matches: db.matches.map((m) => (m.id === matchId ? { ...m, date } : m)) })
   }
 
+  function updateMatchName(matchId: string, name: string) {
+    if (viewOnly) return
+    commit({ ...db, matches: db.matches.map((m) => (m.id === matchId ? { ...m, name } : m)) })
+  }
+
   function createEmptyRally(matchId: string) {
     if (viewOnly) return null
     const r: Rally = { id: uid(), matchId, createdAt: Date.now(), point: null, events: [] }
@@ -445,7 +478,12 @@ export default function App() {
     commit({ ...db, rallies: db.rallies.map((r) => (r.id === rallyId ? { ...r, point } : r)) })
   }
 
-  function addEventInlineAndAutoAdvance(match: Match, rallyId: string, event: RallyEvent, onAdvanced: (nextRallyId: string) => void) {
+  function addEventInlineAndAutoAdvance(
+    match: Match,
+    rallyId: string,
+    event: RallyEvent,
+    onAdvanced: (nextRallyId: string) => void,
+  ) {
     if (viewOnly) return
     const tmap = teamByRoster(match)
     const actorTeam = getActorTeam(event, tmap)
@@ -543,11 +581,13 @@ export default function App() {
       <>
         <Card
           title={`試合（${ms.length}）`}
-          right={!viewOnly ? (
-            <button className="btn small primary" onClick={addMatch} type="button">
-              ＋ 試合追加
-            </button>
-          ) : undefined}
+          right={
+            !viewOnly ? (
+              <button className="btn small primary" onClick={addMatch} type="button">
+                ＋ 試合追加
+              </button>
+            ) : undefined
+          }
         >
           {ms.length === 0 ? (
             <div className="muted">まだ試合がありません。</div>
@@ -557,11 +597,16 @@ export default function App() {
                 const rs = ralliesByMatch.get(m.id) ?? []
                 const tl = buildTimeline(m, rs)
                 const last = tl.length ? tl[tl.length - 1].scoreAfter : { our: 0, opp: 0 }
+                const title = m.name?.trim() ? `${m.name}` : `試合：${m.date}`
+                const sub = m.name?.trim() ? `日付 ${m.date}` : ``
                 return (
                   <button key={m.id} className="listItem" onClick={() => setView({ name: 'match', matchId: m.id })} type="button">
                     <div className="listMain">
-                      <div className="listTitle">試合：{m.date}</div>
-                      <div className="listSub">ラリー {rs.filter((x) => x.point != null).length} / スコア {last.our}-{last.opp}</div>
+                      <div className="listTitle">{title}</div>
+                      <div className="listSub">
+                        {sub ? `${sub} / ` : ''}
+                        ラリー {rs.filter((x) => x.point != null).length} / スコア {last.our}-{last.opp}
+                      </div>
                     </div>
                     <div className="listRight">
                       <span className="scoreBadge">
@@ -622,11 +667,14 @@ export default function App() {
       return { unassigned, our, opp }
     }, [m.roster.our, m.roster.opp, db.players, playersById])
 
-    const [actorId, setActorId] = useState<string>(() => m.roster.our[0] ?? m.roster.opp[0] ?? '')
+    const [actorId, setActorId] = useState<string>(() => m.roster.our[0] ?? m.roster.opp[0] ?? ANON_OUR)
+
     useEffect(() => {
+      const curIsAnon = actorId === ANON_OUR || actorId === ANON_OPP
+      if (curIsAnon) return
       const curExists = actorId && (m.roster.our.includes(actorId) || m.roster.opp.includes(actorId))
       if (curExists) return
-      setActorId(m.roster.our[0] ?? m.roster.opp[0] ?? '')
+      setActorId(m.roster.our[0] ?? m.roster.opp[0] ?? ANON_OUR)
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [m.id, m.roster.our.join(','), m.roster.opp.join(',')])
 
@@ -654,35 +702,52 @@ export default function App() {
         matches: db.matches.map((mm) => (mm.id === m.id ? { ...mm, roster: { our: nextOur, opp: nextOpp } } : mm)),
       })
     }
+
+    // ✅ クリックで割当もできる（分かりやすさ優先）
+    // 未割当をクリック：自チームへ / Shift(or Alt) クリック：相手へ
+    function assignByClick(playerId: string, side: TeamSide) {
+      if (viewOnly) return
+      const nextOur = m.roster.our.filter((x) => x !== playerId)
+      const nextOpp = m.roster.opp.filter((x) => x !== playerId)
+      if (side === 'our') nextOur.push(playerId)
+      if (side === 'opp') nextOpp.push(playerId)
+      commit({
+        ...db,
+        matches: db.matches.map((mm) => (mm.id === m.id ? { ...mm, roster: { our: nextOur, opp: nextOpp } } : mm)),
+      })
+    }
+
     function removeFromRoster(playerId: string) {
       if (viewOnly) return
       commit({
         ...db,
         matches: db.matches.map((mm) => {
           if (mm.id !== m.id) return mm
-          return { ...mm, roster: { our: mm.roster.our.filter((x) => x !== playerId), opp: mm.roster.opp.filter((x) => x !== playerId) } }
+          return {
+            ...mm,
+            roster: { our: mm.roster.our.filter((x) => x !== playerId), opp: mm.roster.opp.filter((x) => x !== playerId) },
+          }
         }),
       })
     }
 
     const tmap = useMemo(() => teamByRoster(m), [m])
-    const actorTeam = actorId ? tmap.get(actorId) ?? null : null
+    const actorTeam = actorId ? getActorTeam({ actorId }, tmap) : null
     const canUseEvents = !!activeRally && !!actorId && !!actorTeam && !viewOnly
 
-    /**
-     * ✅ TS2353 対策：UI入力優先（ここは any で受ける）
-     * ✅ スパイクは spikePos を自動付与（未指定なら選択中の位置）
-     */
-    function addInline(e: any) {
+    function withAutoSpikePos(x: InlineEventInput, pos: SpikePos): InlineEventInput {
+      if (x.kind === 'attack' && x.attackType === 'spike') {
+        return { ...x, spikePos: x.spikePos ?? pos }
+      }
+      return x
+    }
+
+    function addInline(payload: InlineEventInput) {
       if (!activeRally) return
       if (!actorId) return
 
-      let payload = e as any
-      if (payload?.kind === 'attack' && payload?.attackType === 'spike') {
-        payload = { ...payload, spikePos: payload.spikePos ?? spikePosSel }
-      }
-
-      const ev: RallyEvent = { ...(payload as any), id: uid(), actorId, at: Date.now() }
+      const normalized = withAutoSpikePos(payload, spikePosSel)
+      const ev: RallyEvent = { ...(normalized as RallyEvent), id: uid(), actorId, at: Date.now() }
       addEventInlineAndAutoAdvance(m, activeRally.id, ev, (nextId) => {
         setActiveRallyId(nextId)
       })
@@ -696,10 +761,12 @@ export default function App() {
     const tlFinished = buildTimeline(m, finishedSorted)
     const activeNo = finishedSorted.length + 1
 
+    const matchTitle = m.name?.trim() ? m.name.trim() : `試合：${m.date}`
+
     return (
       <>
         <Card
-          title={`試合：${m.date}`}
+          title={matchTitle}
           right={
             <div className="row">
               <button className="btn small" onClick={() => setView({ name: 'matches' })} type="button">
@@ -718,19 +785,47 @@ export default function App() {
               <span>日付</span>
               <input className="input" value={m.date} onChange={(e) => updateMatchDate(m.id, e.target.value)} disabled={viewOnly} />
             </label>
-            <Pill tone="ok">スコア {tl.length ? tl[tl.length - 1].scoreAfter.our : 0}-{tl.length ? tl[tl.length - 1].scoreAfter.opp : 0}</Pill>
+
+            <label className="field grow">
+              <span>試合名</span>
+              <input
+                className="input"
+                value={m.name ?? ''}
+                onChange={(e) => updateMatchName(m.id, e.target.value)}
+                placeholder="例：練習試合 / 公式戦 / 〇〇カップ"
+                disabled={viewOnly}
+              />
+            </label>
+
+            <Pill tone="ok">
+              スコア {tl.length ? tl[tl.length - 1].scoreAfter.our : 0}-{tl.length ? tl[tl.length - 1].scoreAfter.opp : 0}
+            </Pill>
             <Pill>ラリー {finishedSorted.length}</Pill>
           </div>
         </Card>
 
-        <Card title="参加メンバー（ドラッグ＆ドロップで割り当て）">
+        <Card title="参加メンバー（ドラッグ or クリックで割り当て）">
+          <div className="hint">
+            ✅ 未割当をクリック → 自チーム / ✅ 未割当を Shift(または Alt) クリック → 相手 / ✅ チーム側をクリック → 未割当に戻す
+          </div>
           <div className="rosterDnD">
             <div className="dropCol">
               <div className="dropHead">未割当</div>
               <div className="dropBody">
                 {rosterAll.unassigned.length === 0 ? <div className="muted small">（なし）</div> : null}
                 {rosterAll.unassigned.map((p) => (
-                  <div key={p.id} className="dragItem" draggable={!viewOnly} onDragStart={(e) => onDragStart(e, p.id)} onDoubleClick={() => removeFromRoster(p.id)}>
+                  <div
+                    key={p.id}
+                    className="dragItem"
+                    draggable={!viewOnly}
+                    onDragStart={(e) => onDragStart(e, p.id)}
+                    onClick={(e) => {
+                      if (viewOnly) return
+                      const side: TeamSide = e.shiftKey || e.altKey ? 'opp' : 'our'
+                      assignByClick(p.id, side)
+                    }}
+                    title="クリックで割当（Shift/Altで相手）"
+                  >
                     {p.name}
                   </div>
                 ))}
@@ -742,7 +837,14 @@ export default function App() {
               <div className="dropBody">
                 {rosterAll.our.length === 0 ? <div className="muted small">（なし）</div> : null}
                 {rosterAll.our.map((p) => (
-                  <div key={p.id} className="dragItem our" draggable={!viewOnly} onDragStart={(e) => onDragStart(e, p.id)} onDoubleClick={() => removeFromRoster(p.id)}>
+                  <div
+                    key={p.id}
+                    className="dragItem our"
+                    draggable={!viewOnly}
+                    onDragStart={(e) => onDragStart(e, p.id)}
+                    onClick={() => removeFromRoster(p.id)}
+                    title="クリックで未割当に戻す"
+                  >
                     {p.name}
                   </div>
                 ))}
@@ -754,7 +856,14 @@ export default function App() {
               <div className="dropBody">
                 {rosterAll.opp.length === 0 ? <div className="muted small">（なし）</div> : null}
                 {rosterAll.opp.map((p) => (
-                  <div key={p.id} className="dragItem opp" draggable={!viewOnly} onDragStart={(e) => onDragStart(e, p.id)} onDoubleClick={() => removeFromRoster(p.id)}>
+                  <div
+                    key={p.id}
+                    className="dragItem opp"
+                    draggable={!viewOnly}
+                    onDragStart={(e) => onDragStart(e, p.id)}
+                    onClick={() => removeFromRoster(p.id)}
+                    title="クリックで未割当に戻す"
+                  >
                     {p.name}
                   </div>
                 ))}
@@ -765,7 +874,10 @@ export default function App() {
 
         <Card title={`ラリー入力（#${activeNo}）`}>
           <div className="row wrap">
-            <Pill tone="ok">現在スコア {lastScore.our}-{lastScore.opp}</Pill>
+            <Pill tone="ok">
+              現在スコア {lastScore.our}-{lastScore.opp}
+            </Pill>
+
             {!viewOnly ? (
               <div className="row wrap">
                 <button className="btn small primary" onClick={() => manualPoint('our')} type="button">
@@ -783,6 +895,23 @@ export default function App() {
               <div className="hr" />
 
               <div className="subHead">誰が（クリック）</div>
+              <div className="row wrap" style={{ marginBottom: 10 }}>
+                <button
+                  className={`btn small ${actorId === ANON_OUR ? 'primary' : ''}`}
+                  onClick={() => setActorId(ANON_OUR)}
+                  type="button"
+                >
+                  自チーム：無指定
+                </button>
+                <button
+                  className={`btn small ${actorId === ANON_OPP ? 'primary' : ''}`}
+                  onClick={() => setActorId(ANON_OPP)}
+                  type="button"
+                >
+                  相手：無指定
+                </button>
+              </div>
+
               <div className="btnGrid compact">
                 {rosterAll.our.map((p) => (
                   <button key={p.id} className={`who ${actorId === p.id ? 'active' : ''}`} onClick={() => setActorId(p.id)} type="button">
@@ -790,7 +919,12 @@ export default function App() {
                   </button>
                 ))}
                 {rosterAll.opp.map((p) => (
-                  <button key={p.id} className={`who who-opp ${actorId === p.id ? 'active' : ''}`} onClick={() => setActorId(p.id)} type="button">
+                  <button
+                    key={p.id}
+                    className={`who who-opp ${actorId === p.id ? 'active' : ''}`}
+                    onClick={() => setActorId(p.id)}
+                    type="button"
+                  >
                     {p.name}
                   </button>
                 ))}
@@ -803,7 +937,7 @@ export default function App() {
                   <div className="playHead">スパイク</div>
 
                   <div className="row wrap" style={{ marginBottom: 8 }}>
-                    {(['left','middle','right','back','pipe','other'] as SpikePos[]).map((pos) => (
+                    {(['left', 'middle', 'right', 'back', 'pipe', 'other'] as SpikePos[]).map((pos) => (
                       <button
                         key={pos}
                         className={`btn small ${spikePosSel === pos ? 'primary' : ''}`}
@@ -817,10 +951,38 @@ export default function App() {
                   </div>
 
                   <div className="actions4 compact">
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'kill' })} type="button">決定</button>
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'effective' })} type="button">効果的</button>
-                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'continue' })} type="button">継続</button>
-                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'error' })} type="button">ミス</button>
+                    <button
+                      className="action action-ok"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'kill' })}
+                      type="button"
+                    >
+                      決定
+                    </button>
+                    <button
+                      className="action action-ok"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'effective' })}
+                      type="button"
+                    >
+                      効果的
+                    </button>
+                    <button
+                      className="action"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'continue' })}
+                      type="button"
+                    >
+                      継続
+                    </button>
+                    <button
+                      className="action action-danger"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'error' })}
+                      type="button"
+                    >
+                      ミス
+                    </button>
                   </div>
 
                   <div className="hint">※位置は押した瞬間に記録（現在：{SPIKE_POS_LABEL[spikePosSel]}）</div>
@@ -829,40 +991,107 @@ export default function App() {
                 <div className="playCard">
                   <div className="playHead">サーブ</div>
                   <div className="actions4 compact">
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'serve', result: 'ace' })} type="button">ACE</button>
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'serve', result: 'effective' })} type="button">効果的</button>
-                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'serve', result: 'in' })} type="button">継続</button>
-                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'serve', result: 'error' })} type="button">ミス</button>
+                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'serve', result: 'ace' })} type="button">
+                      ACE
+                    </button>
+                    <button
+                      className="action action-ok"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'serve', result: 'effective' })}
+                      type="button"
+                    >
+                      効果的
+                    </button>
+                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'serve', result: 'in' })} type="button">
+                      継続
+                    </button>
+                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'serve', result: 'error' })} type="button">
+                      ミス
+                    </button>
                   </div>
                 </div>
 
                 <div className="playCard">
                   <div className="playHead">ブロック</div>
                   <div className="actions4 compact">
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'block', result: 'point' })} type="button">得点</button>
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'block', result: 'effective' })} type="button">効果的</button>
-                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'block', result: 'touch' })} type="button">タッチ</button>
-                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'block', result: 'error' })} type="button">ミス</button>
+                    <button
+                      className="action action-ok"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'block', result: 'point' })}
+                      type="button"
+                    >
+                      得点
+                    </button>
+                    <button
+                      className="action action-ok"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'block', result: 'effective' })}
+                      type="button"
+                    >
+                      効果的
+                    </button>
+                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'block', result: 'touch' })} type="button">
+                      タッチ
+                    </button>
+                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'block', result: 'error' })} type="button">
+                      ミス
+                    </button>
                   </div>
                 </div>
 
                 <div className="playCard">
                   <div className="playHead">サーブカット</div>
                   <div className="actions4 compact">
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'receive', result: 'ok', quality: 'A' })} type="button">A</button>
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'receive', result: 'ok', quality: 'B' })} type="button">B</button>
-                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'receive', result: 'ok', quality: 'C' })} type="button">C</button>
-                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'receive', result: 'error' })} type="button">ミス</button>
+                    <button
+                      className="action action-ok"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'receive', result: 'ok', quality: 'A' })}
+                      type="button"
+                    >
+                      A
+                    </button>
+                    <button
+                      className="action action-ok"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'receive', result: 'ok', quality: 'B' })}
+                      type="button"
+                    >
+                      B
+                    </button>
+                    <button
+                      className="action"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'receive', result: 'ok', quality: 'C' })}
+                      type="button"
+                    >
+                      C
+                    </button>
+                    <button
+                      className="action action-danger"
+                      disabled={!canUseEvents}
+                      onClick={() => addInline({ kind: 'receive', result: 'error' })}
+                      type="button"
+                    >
+                      ミス
+                    </button>
                   </div>
                 </div>
 
                 <div className="playCard">
                   <div className="playHead">ディグ</div>
                   <div className="actions4 compact">
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'ok', quality: 'A' })} type="button">A</button>
-                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'ok', quality: 'B' })} type="button">B</button>
-                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'ok', quality: 'C' })} type="button">C</button>
-                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'error' })} type="button">ミス</button>
+                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'ok', quality: 'A' })} type="button">
+                      A
+                    </button>
+                    <button className="action action-ok" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'ok', quality: 'B' })} type="button">
+                      B
+                    </button>
+                    <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'ok', quality: 'C' })} type="button">
+                      C
+                    </button>
+                    <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'dig', result: 'error' })} type="button">
+                      ミス
+                    </button>
                   </div>
                 </div>
 
@@ -871,14 +1100,33 @@ export default function App() {
                   <div className="btnGrid compact" style={{ marginBottom: 8 }}>
                     {(
                       [
-                        'left','right','back','pipe',
-                        'aQuick','bQuick','cQuick','dQuick',
-                        'aSemi','bSemi','cSemi','dSemi',
-                        'time','backAttack','wide','short',
-                        'combo','other',
+                        'left',
+                        'right',
+                        'back',
+                        'pipe',
+                        'aQuick',
+                        'bQuick',
+                        'cQuick',
+                        'dQuick',
+                        'aSemi',
+                        'bSemi',
+                        'cSemi',
+                        'dSemi',
+                        'time',
+                        'backAttack',
+                        'wide',
+                        'short',
+                        'combo',
+                        'other',
                       ] as TossType[]
                     ).map((t) => (
-                      <button key={t} className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: t })} type="button">
+                      <button
+                        key={t}
+                        className="btn small"
+                        disabled={!canUseEvents}
+                        onClick={() => addInline({ kind: 'set', result: 'ok', toss: t })}
+                        type="button"
+                      >
                         {TOSS_LABEL[t]}
                       </button>
                     ))}
@@ -899,10 +1147,14 @@ export default function App() {
               ) : (
                 <div className="grid">
                   {activeRally.events.map((e) => {
-                    const p = playersById.get(e.actorId)
-                    const who = p?.name ?? '（不明）'
-                    const team = tmap.get(e.actorId)
-                    const head = `${who}${team === 'opp' ? '（相手）' : ''}`
+                    const isAnon = e.actorId === ANON_OUR || e.actorId === ANON_OPP
+                    const who = isAnon
+                      ? e.actorId === ANON_OUR
+                        ? '（無指定：自チーム）'
+                        : '（無指定：相手）'
+                      : playersById.get(e.actorId)?.name ?? '（不明）'
+                    const team = getActorTeam(e, tmap)
+                    const head = `${who}${team === 'opp' && !isAnon ? '（相手）' : ''}`
 
                     let body = ''
                     if (e.kind === 'attack') body = `スパイク：${e.result}${e.spikePos ? `（${SPIKE_POS_LABEL[e.spikePos]}）` : ''}`
@@ -1004,10 +1256,14 @@ export default function App() {
           ) : (
             <div className="grid">
               {r.events.map((e) => {
-                const p = playersById.get(e.actorId)
-                const who = p?.name ?? '（不明）'
-                const team = tmap.get(e.actorId)
-                const head = `${who}${team === 'opp' ? '（相手）' : ''}`
+                const isAnon = e.actorId === ANON_OUR || e.actorId === ANON_OPP
+                const who = isAnon
+                  ? e.actorId === ANON_OUR
+                    ? '（無指定：自チーム）'
+                    : '（無指定：相手）'
+                  : playersById.get(e.actorId)?.name ?? '（不明）'
+                const team = getActorTeam(e, tmap)
+                const head = `${who}${team === 'opp' && !isAnon ? '（相手）' : ''}`
 
                 let body = ''
                 if (e.kind === 'attack') body = `スパイク：${e.result}${e.spikePos ? `（${SPIKE_POS_LABEL[e.spikePos]}）` : ''}`
@@ -1067,7 +1323,7 @@ export default function App() {
                 <div key={p.id} className="rallyRow">
                   <button className="rallyMain" onClick={() => setView({ name: 'player', playerId: p.id })} type="button">
                     <div className="listTitle">{p.name}</div>
-                    <div className="muted small">個人成績・推移・トス/サーブカット・スパイク位置×決定率</div>
+                    <div className="muted small">個人成績・参加試合別成績・推移・トス配分・スパイク位置×決定率</div>
                   </button>
                   {!viewOnly ? (
                     <button className="btn small danger" onClick={() => deletePlayer(p.id)} type="button">
@@ -1114,14 +1370,12 @@ export default function App() {
       const err = attacks.filter((a) => a.result === 'error').length
       const scoreSum = attacks.reduce((s, a) => s + scoreAttack(a), 0)
       const effectRate = att ? scoreSum / att : 0
-
       return { att, kill, eff, cont, err, effectRate }
     }, [spikeAttacks])
 
-    // ✅ 追加：スパイク位置 × 決定率（＋効果率もついでに）
     const spikePosTable = useMemo(() => {
       type Key = SpikePos | 'unknown'
-      const keys: Key[] = ['left','middle','right','back','pipe','other','unknown']
+      const keys: Key[] = ['left', 'middle', 'right', 'back', 'pipe', 'other', 'unknown']
 
       const map: Record<string, { att: number; kill: number; scoreSum: number }> = {}
       for (const k of keys) map[k] = { att: 0, kill: 0, scoreSum: 0 }
@@ -1141,8 +1395,7 @@ export default function App() {
         return { key: k, label, att: v.att, kill: v.kill, killRate, effectRate }
       })
 
-      // 試行が多い順（同数なら決定率高い順）
-      rows.sort((a, b) => (b.att - a.att) || (b.killRate - a.killRate))
+      rows.sort((a, b) => b.att - a.att || b.killRate - a.killRate)
       return rows
     }, [spikeAttacks])
 
@@ -1193,7 +1446,7 @@ export default function App() {
         if (e.result !== 'ok') continue
         att++
         const tmap = teamByRoster(s.match)
-        const setterTeam = tmap.get(player.id)
+        const setterTeam = getActorTeam({ actorId: player.id }, tmap)
         if (!setterTeam) continue
 
         const events = s.rally.events
@@ -1220,24 +1473,41 @@ export default function App() {
         const rs = ralliesByMatch.get(m.id) ?? []
         const tmap = teamByRoster(m)
 
-        let aSum = 0, aAtt = 0
-        let sSum = 0, sAtt = 0
-        let bSum = 0, bAtt = 0
-        let rSum = 0, rAtt = 0
-        let setSum = 0, setScored = 0
+        let aSum = 0,
+          aAtt = 0
+        let sSum = 0,
+          sAtt = 0
+        let bSum = 0,
+          bAtt = 0
+        let rSum = 0,
+          rAtt = 0
+        let setSum = 0,
+          setScored = 0
 
         for (const r of rs) {
           for (let i = 0; i < r.events.length; i++) {
             const e = r.events[i]
             if (e.actorId !== player.id) continue
 
-            if (e.kind === 'attack' && e.attackType === 'spike') { aAtt++; aSum += scoreAttack(e) }
-            if (e.kind === 'serve') { sAtt++; sSum += scoreServe(e) }
-            if (e.kind === 'block') { bAtt++; bSum += scoreBlock(e) }
-            if (e.kind === 'receive' || e.kind === 'dig') { rAtt++; rSum += scoreReceive(e) }
+            if (e.kind === 'attack' && e.attackType === 'spike') {
+              aAtt++
+              aSum += scoreAttack(e)
+            }
+            if (e.kind === 'serve') {
+              sAtt++
+              sSum += scoreServe(e)
+            }
+            if (e.kind === 'block') {
+              bAtt++
+              bSum += scoreBlock(e)
+            }
+            if (e.kind === 'receive' || e.kind === 'dig') {
+              rAtt++
+              rSum += scoreReceive(e)
+            }
 
             if (e.kind === 'set' && e.result === 'ok') {
-              const setterTeam = tmap.get(player.id)
+              const setterTeam = getActorTeam({ actorId: player.id }, tmap)
               if (setterTeam) {
                 let nextAttack: AttackEvent | null = null
                 for (let k = i + 1; k < r.events.length; k++) {
@@ -1248,7 +1518,10 @@ export default function App() {
                   nextAttack = ev
                   break
                 }
-                if (nextAttack) { setScored++; setSum += scoreAttack(nextAttack) }
+                if (nextAttack) {
+                  setScored++
+                  setSum += scoreAttack(nextAttack)
+                }
               }
             }
           }
@@ -1272,7 +1545,7 @@ export default function App() {
         const rs = ralliesByMatch.get(m.id) ?? []
         const tl = buildTimeline(m, rs)
         const teamMap = teamByRoster(m)
-        const setterTeam = teamMap.get(player.id)
+        const setterTeam = getActorTeam({ actorId: player.id }, teamMap)
         if (!setterTeam) continue
 
         for (const row of tl) {
@@ -1308,7 +1581,10 @@ export default function App() {
             const inner = map.get(key) ?? new Map<TossType, number>()
             const subtotal = Array.from(inner.values()).reduce((a, b) => a + b, 0)
             const sorted = Array.from(inner.entries()).sort((a, b) => b[1] - a[1])
-            const top3 = sorted.slice(0, 3).map(([t, c]) => `${TOSS_LABEL[t]} ${pct(c, subtotal)}`).join(' / ')
+            const top3 = sorted
+              .slice(0, 3)
+              .map(([t, c]) => `${TOSS_LABEL[t]} ${pct(c, subtotal)}`)
+              .join(' / ')
             rows.push({
               key,
               rec,
@@ -1322,34 +1598,191 @@ export default function App() {
       return rows
     }, [db.matches, ralliesByMatch, player.id])
 
+    // ✅ 追加：参加した試合（ロスターにいる or イベントがある）
+    const matchesJoined = useMemo(() => {
+      const out: { match: Match; side: TeamSide | null }[] = []
+      for (const m of db.matches) {
+        const inOur = m.roster.our.includes(player.id)
+        const inOpp = m.roster.opp.includes(player.id)
+        const inRoster = inOur || inOpp
+        if (inRoster) out.push({ match: m, side: inOur ? 'our' : 'opp' })
+        else {
+          const rs = ralliesByMatch.get(m.id) ?? []
+          let hasEvent = false
+          for (const r of rs) {
+            if (r.events.some((e) => e.actorId === player.id)) {
+              hasEvent = true
+              break
+            }
+          }
+          if (hasEvent) out.push({ match: m, side: null })
+        }
+      }
+      out.sort((a, b) => (a.match.date < b.match.date ? 1 : -1))
+      return out
+    }, [db.matches, ralliesByMatch, player.id])
+
+    // ✅ 追加：試合ごとの決定率/効果率（スパイク中心＋他も）
+    const perMatchTable = useMemo(() => {
+      const rows: {
+        matchId: string
+        date: string
+        name: string
+        side: string
+        spikeAtt: number
+        spikeKill: number
+        spikeKillRate: string
+        spikeEffRate: string
+        serveAtt: number
+        serveEffRate: string
+        blockAtt: number
+        blockEffRate: string
+        receiveAtt: number
+        receiveEffRate: string
+      }[] = []
+
+      for (const j of matchesJoined) {
+        const m = j.match
+        const rs = ralliesByMatch.get(m.id) ?? []
+        const sideLabel = j.side === 'our' ? '自' : j.side === 'opp' ? '相' : '—'
+
+        let aAtt = 0,
+          aKill = 0,
+          aSum = 0
+        let sAtt = 0,
+          sSum = 0
+        let bAtt = 0,
+          bSum = 0
+        let rAtt = 0,
+          rSum = 0
+
+        for (const r of rs) {
+          for (const e of r.events) {
+            if (e.actorId !== player.id) continue
+            if (e.kind === 'attack' && e.attackType === 'spike') {
+              aAtt++
+              if (e.result === 'kill') aKill++
+              aSum += scoreAttack(e)
+            }
+            if (e.kind === 'serve') {
+              sAtt++
+              sSum += scoreServe(e)
+            }
+            if (e.kind === 'block') {
+              bAtt++
+              bSum += scoreBlock(e)
+            }
+            if (e.kind === 'receive' || e.kind === 'dig') {
+              rAtt++
+              rSum += scoreReceive(e)
+            }
+          }
+        }
+
+        rows.push({
+          matchId: m.id,
+          date: m.date,
+          name: m.name?.trim() ? m.name!.trim() : '（無名）',
+          side: sideLabel,
+          spikeAtt: aAtt,
+          spikeKill: aKill,
+          spikeKillRate: pct(aKill, aAtt),
+          spikeEffRate: aAtt ? (aSum / aAtt).toFixed(3) : '—',
+          serveAtt: sAtt,
+          serveEffRate: sAtt ? (sSum / sAtt).toFixed(3) : '—',
+          blockAtt: bAtt,
+          blockEffRate: bAtt ? (bSum / bAtt).toFixed(3) : '—',
+          receiveAtt: rAtt,
+          receiveEffRate: rAtt ? (rSum / rAtt).toFixed(3) : '—',
+        })
+      }
+
+      rows.sort((a, b) => (a.date < b.date ? 1 : -1))
+      return rows
+    }, [matchesJoined, ralliesByMatch, player.id])
+
     return (
       <>
         <Card title={`人物：${player.name}`} right={<button className="btn small" onClick={() => setView({ name: 'players' })} type="button">戻る</button>}>
           <div className="row wrap">
-            <Pill tone="ok">スパイク：試行 {spike.att} / 決定 {spike.kill} / 効果的 {spike.eff} / 継続 {spike.cont} / ミス {spike.err}</Pill>
+            <Pill tone="ok">
+              スパイク：試行 {spike.att} / 決定 {spike.kill} / 効果的 {spike.eff} / 継続 {spike.cont} / ミス {spike.err}
+            </Pill>
             <Pill>効果率 {spike.effectRate.toFixed(3)}</Pill>
           </div>
 
           <div className="hint">
-            ※決定率は「決定 / 試行」。効果率は「{`(得点=1, 効果的=0.7, 継続=0.3, ミス=0)`} の平均」。
+            ※決定率は「決定 / 試行」。効果率は「(得点=1, 効果的=0.7, 継続=0.3, ミス=0) の平均」。
           </div>
 
           <div className="row wrap">
-            <Pill tone="ok">サーブ：試行 {serve.att} / ACE {serve.ace} / 効果的 {serve.eff} / 継続 {serve.cont} / ミス {serve.err}</Pill>
+            <Pill tone="ok">
+              サーブ：試行 {serve.att} / ACE {serve.ace} / 効果的 {serve.eff} / 継続 {serve.cont} / ミス {serve.err}
+            </Pill>
             <Pill>効果率 {serve.effectRate.toFixed(3)}</Pill>
           </div>
           <div className="row wrap">
-            <Pill tone="ok">ブロック：試行 {block.att} / 決定 {block.point} / 効果的 {block.eff} / 継続 {block.cont} / ミス {block.err}</Pill>
+            <Pill tone="ok">
+              ブロック：試行 {block.att} / 決定 {block.point} / 効果的 {block.eff} / 継続 {block.cont} / ミス {block.err}
+            </Pill>
             <Pill>効果率 {block.effectRate.toFixed(3)}</Pill>
           </div>
           <div className="row wrap">
-            <Pill tone="ok">サーブカット/ディグ：試行 {receive.att} / A {receive.A} / B {receive.B} / C {receive.C} / ミス {receive.err}</Pill>
+            <Pill tone="ok">
+              サーブカット/ディグ：試行 {receive.att} / A {receive.A} / B {receive.B} / C {receive.C} / ミス {receive.err}
+            </Pill>
             <Pill>効果率 {receive.effectRate.toFixed(3)}</Pill>
           </div>
           <div className="row wrap">
-            <Pill tone="ok">トス：試行 {setStat.att} / 直後攻撃あり {setStat.scored}</Pill>
+            <Pill tone="ok">
+              トス：試行 {setStat.att} / 直後攻撃あり {setStat.scored}
+            </Pill>
             <Pill>効果率（直後攻撃） {setStat.effectRate.toFixed(3)}</Pill>
           </div>
+        </Card>
+
+        <Card title={`参加した試合（${matchesJoined.length}）`}>
+          {matchesJoined.length === 0 ? (
+            <div className="muted">参加試合がありません。</div>
+          ) : (
+            <>
+              <div className="hint">試合をクリックすると、その試合ページへ移動します。</div>
+              <div className="tableWrap">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th className="th">日付</th>
+                      <th className="th">試合名</th>
+                      <th className="th">自/相</th>
+                      <th className="th">スパイク試行</th>
+                      <th className="th">決定</th>
+                      <th className="th">決定率</th>
+                      <th className="th">スパイク効果率</th>
+                      <th className="th">サーブ効果率</th>
+                      <th className="th">ブロック効果率</th>
+                      <th className="th">レシーブ効果率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {perMatchTable.map((r) => (
+                      <tr key={r.matchId} style={{ cursor: 'pointer' }} onClick={() => setView({ name: 'match', matchId: r.matchId })}>
+                        <td className="td">{r.date}</td>
+                        <td className="td">{r.name}</td>
+                        <td className="td">{r.side}</td>
+                        <td className="td">{r.spikeAtt}</td>
+                        <td className="td">{r.spikeKill}</td>
+                        <td className="td">{r.spikeKillRate}</td>
+                        <td className="td">{r.spikeEffRate}</td>
+                        <td className="td">{r.serveEffRate}</td>
+                        <td className="td">{r.blockEffRate}</td>
+                        <td className="td">{r.receiveEffRate}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </Card>
 
         <Card title="スパイク位置 × 決定率">
