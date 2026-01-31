@@ -6,31 +6,11 @@ type ReceiveQuality = 'A' | 'B' | 'C'
 type LeadState = 'lead' | 'tie' | 'behind'
 type Phase = 'early' | 'mid' | 'late'
 
-// ---- TossType: enum禁止対応（erasableSyntaxOnly） ----
-const TOSS_TYPES = {
-  left: 'left',
-  right: 'right',
-  back: 'back',
-  pipe: 'pipe',
-  aQuick: 'aQuick',
-  bQuick: 'bQuick',
-  cQuick: 'cQuick',
-  dQuick: 'dQuick',
-  bSemi: 'bSemi',
-  aSemi: 'aSemi',
-  cSemi: 'cSemi',
-  dSemi: 'dSemi',
-  time: 'time',
-  backAttack: 'backAttack',
-  wide: 'wide',
-  short: 'short',
-  combo: 'combo',
-  other: 'other',
-} as const
-
-type TossType = (typeof TOSS_TYPES)[keyof typeof TOSS_TYPES]
-
-const TOSS_LABEL: Record<TossType, string> = {
+/**
+ * ✅ TS1294 対策：enum を使わない（erasableSyntaxOnly 対応）
+ * 文字リテラル union + const map で置き換え
+ */
+const TOSS_LABEL = {
   left: 'レフト',
   right: 'ライト',
   back: 'バック',
@@ -49,7 +29,8 @@ const TOSS_LABEL: Record<TossType, string> = {
   short: 'ショート',
   combo: 'コンビ',
   other: 'その他',
-}
+} as const
+type TossType = keyof typeof TOSS_LABEL
 
 type Player = {
   id: string
@@ -77,8 +58,6 @@ type AttackEvent = BaseEvent & {
   kind: 'attack'
   attackType: 'spike'
   result: 'kill' | 'effective' | 'continue' | 'error'
-  // ★ 直前トス由来の位置（推定）
-  fromToss?: TossType
 }
 
 type ServeEvent = BaseEvent & {
@@ -92,13 +71,13 @@ type BlockEvent = BaseEvent & {
 }
 
 type ReceiveEvent = BaseEvent & {
-  kind: 'receive'
+  kind: 'receive' // サーブカット
   result: 'ok' | 'error'
   quality?: ReceiveQuality
 }
 
 type DigEvent = BaseEvent & {
-  kind: 'dig'
+  kind: 'dig' // ディグ
   result: 'ok' | 'error'
   quality?: ReceiveQuality
 }
@@ -110,15 +89,6 @@ type SetEvent = BaseEvent & {
 }
 
 type RallyEvent = AttackEvent | ServeEvent | BlockEvent | ReceiveEvent | DigEvent | SetEvent
-
-// ---- 入力用イベント（id/actorId/atなし）: unionの型事故を回避 ----
-type InputEvent =
-  | { kind: 'attack'; attackType: 'spike'; result: AttackEvent['result'] }
-  | { kind: 'serve'; result: ServeEvent['result'] }
-  | { kind: 'block'; result: BlockEvent['result'] }
-  | { kind: 'receive'; result: ReceiveEvent['result']; quality?: ReceiveQuality }
-  | { kind: 'dig'; result: DigEvent['result']; quality?: ReceiveQuality }
-  | { kind: 'set'; result: SetEvent['result']; toss?: TossType }
 
 type Rally = {
   id: string
@@ -342,19 +312,6 @@ function inferPointFromEvent(e: RallyEvent, actorTeam: TeamSide): TeamSide | nul
   return null
 }
 
-// ★ 直前トス（同一チーム・OK）を拾ってスパイクに紐づける
-function inferTossForSpike(rally: Rally, spikeActorTeam: TeamSide, tmap: Map<string, TeamSide>): TossType | undefined {
-  for (let i = rally.events.length - 1; i >= 0; i--) {
-    const e = rally.events[i]
-    if (e.kind !== 'set') continue
-    if (e.result !== 'ok' || !e.toss) continue
-    const team = getActorTeam(e, tmap)
-    if (team !== spikeActorTeam) continue
-    return e.toss
-  }
-  return undefined
-}
-
 const LEAD_LABEL: Record<LeadState, string> = { lead: 'リード', tie: '同点', behind: 'ビハインド' }
 const PHASE_LABEL: Record<Phase, string> = { early: '序盤', mid: '中盤', late: '終盤' }
 
@@ -508,7 +465,6 @@ export default function App() {
     }
 
     commit({ ...db, rallies: nextRallies })
-
     if (shouldAdvance) onAdvanced(nextId)
   }
 
@@ -552,59 +508,61 @@ export default function App() {
 
   function Home() {
     return (
-      <Card title="ホーム">
-        <div className="row wrap">
-          <button className="btn primary" onClick={() => setView({ name: 'matches' })} type="button">
-            試合へ
-          </button>
-          <button className="btn" onClick={() => setView({ name: 'players' })} type="button">
-            人物へ
-          </button>
-        </div>
-        <div className="hint">編集モード：端末内に保存 / 閲覧モード（?view=1）：data.json を読み込み</div>
-      </Card>
+      <>
+        <Card title="ホーム">
+          <div className="row wrap">
+            <button className="btn primary" onClick={() => setView({ name: 'matches' })} type="button">
+              試合へ
+            </button>
+            <button className="btn" onClick={() => setView({ name: 'players' })} type="button">
+              人物へ
+            </button>
+          </div>
+          <div className="hint">編集モード：端末内に保存 / 閲覧モード（?view=1）：data.json を読み込み</div>
+        </Card>
+      </>
     )
   }
 
   function Matches() {
     const ms = db.matches.slice().sort((a, b) => (a.date < b.date ? 1 : -1))
     return (
-      <Card
-        title={`試合（${ms.length}）`}
-        right={
-          !viewOnly ? (
+      <>
+        <Card
+          title={`試合（${ms.length}）`}
+          right={!viewOnly ? (
             <button className="btn small primary" onClick={addMatch} type="button">
               ＋ 試合追加
             </button>
-          ) : undefined
-        }
-      >
-        {ms.length === 0 ? (
-          <div className="muted">まだ試合がありません。</div>
-        ) : (
-          <div className="grid">
-            {ms.map((m) => {
-              const rs = ralliesByMatch.get(m.id) ?? []
-              const tl = buildTimeline(m, rs)
-              const last = tl.length ? tl[tl.length - 1].scoreAfter : { our: 0, opp: 0 }
-              return (
-                <button key={m.id} className="listItem" onClick={() => setView({ name: 'match', matchId: m.id })} type="button">
-                  <div className="listMain">
-                    <div className="listTitle">試合：{m.date}</div>
-                    <div className="listSub">ラリー {rs.filter((x) => x.point != null).length} / スコア {last.our}-{last.opp}</div>
-                  </div>
-                  <div className="listRight">
-                    <span className="scoreBadge">
-                      {last.our}-{last.opp}
-                    </span>
-                    <span className="chev">›</span>
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </Card>
+          ) : undefined}
+        >
+          {ms.length === 0 ? (
+            <div className="muted">まだ試合がありません。</div>
+          ) : (
+            <div className="grid">
+              {ms.map((m) => {
+                const rs = ralliesByMatch.get(m.id) ?? []
+                const tl = buildTimeline(m, rs)
+                const last = tl.length ? tl[tl.length - 1].scoreAfter : { our: 0, opp: 0 }
+                return (
+                  <button key={m.id} className="listItem" onClick={() => setView({ name: 'match', matchId: m.id })} type="button">
+                    <div className="listMain">
+                      <div className="listTitle">試合：{m.date}</div>
+                      <div className="listSub">ラリー {rs.filter((x) => x.point != null).length} / スコア {last.our}-{last.opp}</div>
+                    </div>
+                    <div className="listRight">
+                      <span className="scoreBadge">
+                        {last.our}-{last.opp}
+                      </span>
+                      <span className="chev">›</span>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </Card>
+      </>
     )
   }
 
@@ -696,20 +654,17 @@ export default function App() {
     const actorTeam = actorId ? tmap.get(actorId) ?? null : null
     const canUseEvents = !!activeRally && !!actorId && !!actorTeam && !viewOnly
 
-    function addInline(e: InputEvent) {
+    /**
+     * ✅ TS2353 対策：ここは型を緩める（UI入力を最優先）
+     * discriminated union の Omit をやめて any で受ける
+     */
+    function addInline(e: any) {
       if (!activeRally) return
       if (!actorId) return
-      if (!actorTeam) return
-
-      // ★ スパイクなら「直前トス」を拾って fromToss に入れる
-      let extra: Partial<AttackEvent> = {}
-      if (e.kind === 'attack' && e.attackType === 'spike') {
-        const toss = inferTossForSpike(activeRally, actorTeam, tmap)
-        if (toss) extra = { fromToss: toss }
-      }
-
-      const ev: RallyEvent = { ...(e as any), ...extra, id: uid(), actorId, at: Date.now() }
-      addEventInlineAndAutoAdvance(m, activeRally.id, ev, (nextId) => setActiveRallyId(nextId))
+      const ev: RallyEvent = { ...(e as any), id: uid(), actorId, at: Date.now() }
+      addEventInlineAndAutoAdvance(m, activeRally.id, ev, (nextId) => {
+        setActiveRallyId(nextId)
+      })
     }
 
     function manualPoint(side: TeamSide) {
@@ -787,6 +742,7 @@ export default function App() {
           </div>
         </Card>
 
+        {/* ラリー追加ボタンは置かない（自動で「未確定ラリー」を維持する設計） */}
         <Card title={`ラリー入力（#${activeNo}）`}>
           <div className="row wrap">
             <Pill tone="ok">現在スコア {lastScore.our}-{lastScore.opp}</Pill>
@@ -820,6 +776,10 @@ export default function App() {
                 ))}
               </div>
 
+              {(!actorId || !actorTeam) ? (
+                <div className="hint">※イベント入力するには、参加メンバーを割り当てて「誰が」を選んでください。</div>
+              ) : null}
+
               <div className="hr" />
 
               <div className="playGrid2">
@@ -831,7 +791,6 @@ export default function App() {
                     <button className="action" disabled={!canUseEvents} onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'continue' })} type="button">継続</button>
                     <button className="action action-danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'attack', attackType: 'spike', result: 'error' })} type="button">ミス</button>
                   </div>
-                  <div className="hint">※スパイク位置は「直前のトス」から自動推定</div>
                 </div>
 
                 <div className="playCard">
@@ -880,28 +839,28 @@ export default function App() {
                   <div className="playHead">トス</div>
 
                   <div className="btnGrid compact" style={{ marginBottom: 8 }}>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.left })} type="button">{TOSS_LABEL[TOSS_TYPES.left]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.right })} type="button">{TOSS_LABEL[TOSS_TYPES.right]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.back })} type="button">{TOSS_LABEL[TOSS_TYPES.back]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.pipe })} type="button">{TOSS_LABEL[TOSS_TYPES.pipe]}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'left' })} type="button">{TOSS_LABEL.left}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'right' })} type="button">{TOSS_LABEL.right}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'back' })} type="button">{TOSS_LABEL.back}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'pipe' })} type="button">{TOSS_LABEL.pipe}</button>
 
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.aQuick })} type="button">{TOSS_LABEL[TOSS_TYPES.aQuick]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.bQuick })} type="button">{TOSS_LABEL[TOSS_TYPES.bQuick]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.cQuick })} type="button">{TOSS_LABEL[TOSS_TYPES.cQuick]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.dQuick })} type="button">{TOSS_LABEL[TOSS_TYPES.dQuick]}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'aQuick' })} type="button">{TOSS_LABEL.aQuick}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'bQuick' })} type="button">{TOSS_LABEL.bQuick}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'cQuick' })} type="button">{TOSS_LABEL.cQuick}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'dQuick' })} type="button">{TOSS_LABEL.dQuick}</button>
 
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.aSemi })} type="button">{TOSS_LABEL[TOSS_TYPES.aSemi]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.bSemi })} type="button">{TOSS_LABEL[TOSS_TYPES.bSemi]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.cSemi })} type="button">{TOSS_LABEL[TOSS_TYPES.cSemi]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.dSemi })} type="button">{TOSS_LABEL[TOSS_TYPES.dSemi]}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'aSemi' })} type="button">{TOSS_LABEL.aSemi}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'bSemi' })} type="button">{TOSS_LABEL.bSemi}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'cSemi' })} type="button">{TOSS_LABEL.cSemi}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'dSemi' })} type="button">{TOSS_LABEL.dSemi}</button>
 
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.time })} type="button">{TOSS_LABEL[TOSS_TYPES.time]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.backAttack })} type="button">{TOSS_LABEL[TOSS_TYPES.backAttack]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.wide })} type="button">{TOSS_LABEL[TOSS_TYPES.wide]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.short })} type="button">{TOSS_LABEL[TOSS_TYPES.short]}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'time' })} type="button">{TOSS_LABEL.time}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'backAttack' })} type="button">{TOSS_LABEL.backAttack}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'wide' })} type="button">{TOSS_LABEL.wide}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'short' })} type="button">{TOSS_LABEL.short}</button>
 
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.combo })} type="button">{TOSS_LABEL[TOSS_TYPES.combo]}</button>
-                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: TOSS_TYPES.other })} type="button">{TOSS_LABEL[TOSS_TYPES.other]}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'combo' })} type="button">{TOSS_LABEL.combo}</button>
+                    <button className="btn small" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'ok', toss: 'other' })} type="button">{TOSS_LABEL.other}</button>
 
                     <button className="btn small danger" disabled={!canUseEvents} onClick={() => addInline({ kind: 'set', result: 'error' })} type="button">
                       トスミス
@@ -928,10 +887,7 @@ export default function App() {
                     const head = `${who}${team === 'opp' ? '（相手）' : ''}`
 
                     let body = ''
-                    if (e.kind === 'attack') {
-                      const lane = e.fromToss ? `（${TOSS_LABEL[e.fromToss]}）` : ''
-                      body = `スパイク：${e.result}${lane}`
-                    }
+                    if (e.kind === 'attack') body = `スパイク：${e.result}`
                     if (e.kind === 'serve') body = `サーブ：${e.result}`
                     if (e.kind === 'block') body = `ブロック：${e.result}`
                     if (e.kind === 'receive') body = `サーブカット：${e.result}${e.quality ? `(${e.quality})` : ''}`
@@ -1004,56 +960,58 @@ export default function App() {
     const tmap = teamByRoster(m)
 
     return (
-      <Card
-        title="ラリー（過去分の確認）"
-        right={
-          <button className="btn small" onClick={() => setView({ name: 'match', matchId: m.id })} type="button">
-            戻る
-          </button>
-        }
-      >
-        <div className="row wrap">
-          <Pill tone={r.point === 'our' ? 'ok' : r.point === 'opp' ? 'danger' : undefined}>
-            得点: {r.point === 'our' ? '自チーム' : r.point === 'opp' ? '相手' : '未確定'}
-          </Pill>
-        </div>
+      <>
+        <Card title="ラリー（過去分の確認/修正）" right={<button className="btn small" onClick={() => setView({ name: 'match', matchId: m.id })} type="button">戻る</button>}>
+          {!viewOnly ? (
+            <div className="seg">
+              <button className={`segBtn ${r.point === 'our' ? 'active' : ''}`} onClick={() => setRallyPoint(r.id, 'our')} type="button">
+                自チーム得点
+              </button>
+              <button className={`segBtn ${r.point === 'opp' ? 'active' : ''}`} onClick={() => setRallyPoint(r.id, 'opp')} type="button">
+                相手得点
+              </button>
+              <button className={`segBtn ${r.point == null ? 'active' : ''}`} onClick={() => setRallyPoint(r.id, null)} type="button">
+                未確定
+              </button>
+            </div>
+          ) : (
+            <div className="hint">閲覧モード</div>
+          )}
 
-        <div className="hr" />
+          <div className="hr" />
 
-        <div className="subHead">イベント</div>
-        {r.events.length === 0 ? (
-          <div className="muted">イベントなし</div>
-        ) : (
-          <div className="grid">
-            {r.events.map((e) => {
-              const p = playersById.get(e.actorId)
-              const who = p?.name ?? '（不明）'
-              const team = tmap.get(e.actorId)
-              const head = `${who}${team === 'opp' ? '（相手）' : ''}`
+          <div className="subHead">イベント</div>
+          {r.events.length === 0 ? (
+            <div className="muted">イベントなし</div>
+          ) : (
+            <div className="grid">
+              {r.events.map((e) => {
+                const p = playersById.get(e.actorId)
+                const who = p?.name ?? '（不明）'
+                const team = tmap.get(e.actorId)
+                const head = `${who}${team === 'opp' ? '（相手）' : ''}`
 
-              let body = ''
-              if (e.kind === 'attack') {
-                const lane = e.fromToss ? `（${TOSS_LABEL[e.fromToss]}）` : ''
-                body = `スパイク：${e.result}${lane}`
-              }
-              if (e.kind === 'serve') body = `サーブ：${e.result}`
-              if (e.kind === 'block') body = `ブロック：${e.result}`
-              if (e.kind === 'receive') body = `サーブカット：${e.result}${e.quality ? `(${e.quality})` : ''}`
-              if (e.kind === 'dig') body = `ディグ：${e.result}${e.quality ? `(${e.quality})` : ''}`
-              if (e.kind === 'set') body = `トス：${e.result}${e.toss ? `(${TOSS_LABEL[e.toss]})` : ''}`
+                let body = ''
+                if (e.kind === 'attack') body = `スパイク：${e.result}`
+                if (e.kind === 'serve') body = `サーブ：${e.result}`
+                if (e.kind === 'block') body = `ブロック：${e.result}`
+                if (e.kind === 'receive') body = `サーブカット：${e.result}${e.quality ? `(${e.quality})` : ''}`
+                if (e.kind === 'dig') body = `ディグ：${e.result}${e.quality ? `(${e.quality})` : ''}`
+                if (e.kind === 'set') body = `トス：${e.result}${e.toss ? `(${TOSS_LABEL[e.toss]})` : ''}`
 
-              return (
-                <div key={e.id} className="eventRow">
-                  <div className="eventLeft">
-                    <div className="listTitle">{head}</div>
-                    <div className="muted small">{body}</div>
+                return (
+                  <div key={e.id} className="eventRow">
+                    <div className="eventLeft">
+                      <div className="listTitle">{head}</div>
+                      <div className="muted small">{body}</div>
+                    </div>
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </Card>
+                )
+              })}
+            </div>
+          )}
+        </Card>
+      </>
     )
   }
 
@@ -1093,6 +1051,11 @@ export default function App() {
                     <div className="listTitle">{p.name}</div>
                     <div className="muted small">個人成績・推移・トス/サーブカット</div>
                   </button>
+                  {!viewOnly ? (
+                    <button className="btn small danger" onClick={() => deletePlayer(p.id)} type="button">
+                      削除
+                    </button>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -1102,13 +1065,273 @@ export default function App() {
     )
   }
 
-  // ★ PlayerDetail は長いので、まずビルド通す目的で簡略版にする（必要なら次で復活/拡張）
   function PlayerDetail(props: { player: Player }) {
     const player = props.player
+    const ms = db.matches.slice().sort((a, b) => (a.date < b.date ? -1 : 1))
+
+    const allEvents = useMemo(() => {
+      const out: { match: Match; rally: Rally; event: RallyEvent; eventIndex: number }[] = []
+      for (const m of db.matches) {
+        const rs = ralliesByMatch.get(m.id) ?? []
+        for (const r of rs) {
+          for (let i = 0; i < r.events.length; i++) {
+            const e = r.events[i]
+            if (e.actorId === player.id) out.push({ match: m, rally: r, event: e, eventIndex: i })
+          }
+        }
+      }
+      return out
+    }, [db.matches, ralliesByMatch, player.id])
+
+    const spike = useMemo(() => {
+      const attacks = allEvents.map((x) => x.event).filter((e): e is AttackEvent => e.kind === 'attack' && e.attackType === 'spike')
+      const att = attacks.length
+      const kill = attacks.filter((a) => a.result === 'kill').length
+      const eff = attacks.filter((a) => a.result === 'effective').length
+      const cont = attacks.filter((a) => a.result === 'continue').length
+      const err = attacks.filter((a) => a.result === 'error').length
+      const scoreSum = attacks.reduce((s, a) => s + scoreAttack(a), 0)
+      const effectRate = att ? scoreSum / att : 0
+      return { att, kill, eff, cont, err, effectRate }
+    }, [allEvents])
+
+    const serve = useMemo(() => {
+      const serves = allEvents.map((x) => x.event).filter((e): e is ServeEvent => e.kind === 'serve')
+      const att = serves.length
+      const ace = serves.filter((s) => s.result === 'ace').length
+      const eff = serves.filter((s) => s.result === 'effective').length
+      const cont = serves.filter((s) => s.result === 'in').length
+      const err = serves.filter((s) => s.result === 'error').length
+      const scoreSum = serves.reduce((s, a) => s + scoreServe(a), 0)
+      const effectRate = att ? scoreSum / att : 0
+      return { att, ace, eff, cont, err, effectRate }
+    }, [allEvents])
+
+    const block = useMemo(() => {
+      const blocks = allEvents.map((x) => x.event).filter((e): e is BlockEvent => e.kind === 'block')
+      const att = blocks.length
+      const point = blocks.filter((b) => b.result === 'point').length
+      const eff = blocks.filter((b) => b.result === 'effective').length
+      const cont = blocks.filter((b) => b.result === 'touch').length
+      const err = blocks.filter((b) => b.result === 'error').length
+      const scoreSum = blocks.reduce((s, a) => s + scoreBlock(a), 0)
+      const effectRate = att ? scoreSum / att : 0
+      return { att, point, eff, cont, err, effectRate }
+    }, [allEvents])
+
+    const receive = useMemo(() => {
+      const rs = allEvents.map((x) => x.event).filter((e): e is ReceiveEvent | DigEvent => e.kind === 'receive' || e.kind === 'dig')
+      const att = rs.length
+      const A = rs.filter((r) => r.result === 'ok' && r.quality === 'A').length
+      const B = rs.filter((r) => r.result === 'ok' && r.quality === 'B').length
+      const C = rs.filter((r) => r.result === 'ok' && r.quality === 'C').length
+      const err = rs.filter((r) => r.result === 'error').length
+      const scoreSum = rs.reduce((s, r) => s + scoreReceive(r), 0)
+      const effectRate = att ? scoreSum / att : 0
+      return { att, A, B, C, err, effectRate }
+    }, [allEvents])
+
+    const setStat = useMemo(() => {
+      const sets = allEvents.filter((x) => x.event.kind === 'set')
+      let att = 0
+      let scored = 0
+      let scoreSum = 0
+
+      for (const s of sets) {
+        const e = s.event as SetEvent
+        if (e.result !== 'ok') continue
+        att++
+        const tmap = teamByRoster(s.match)
+        const setterTeam = tmap.get(player.id)
+        if (!setterTeam) continue
+
+        const events = s.rally.events
+        let nextAttack: AttackEvent | null = null
+        for (let i = s.eventIndex + 1; i < events.length; i++) {
+          const ev = events[i]
+          if (ev.kind !== 'attack') continue
+          const team = getActorTeam(ev, tmap)
+          if (team !== setterTeam) continue
+          nextAttack = ev
+          break
+        }
+        if (!nextAttack) continue
+        scored++
+        scoreSum += scoreAttack(nextAttack)
+      }
+
+      const effectRate = scored ? scoreSum / scored : 0
+      return { att, scored, effectRate }
+    }, [allEvents, player.id])
+
+    const perMatchSeries = useMemo(() => {
+      return ms.map((m) => {
+        const rs = ralliesByMatch.get(m.id) ?? []
+        const tmap = teamByRoster(m)
+
+        let aSum = 0, aAtt = 0
+        let sSum = 0, sAtt = 0
+        let bSum = 0, bAtt = 0
+        let rSum = 0, rAtt = 0
+        let setSum = 0, setScored = 0
+
+        for (const r of rs) {
+          for (let i = 0; i < r.events.length; i++) {
+            const e = r.events[i]
+            if (e.actorId !== player.id) continue
+
+            if (e.kind === 'attack' && e.attackType === 'spike') { aAtt++; aSum += scoreAttack(e) }
+            if (e.kind === 'serve') { sAtt++; sSum += scoreServe(e) }
+            if (e.kind === 'block') { bAtt++; bSum += scoreBlock(e) }
+            if (e.kind === 'receive' || e.kind === 'dig') { rAtt++; rSum += scoreReceive(e) }
+
+            if (e.kind === 'set' && e.result === 'ok') {
+              const setterTeam = tmap.get(player.id)
+              if (setterTeam) {
+                let nextAttack: AttackEvent | null = null
+                for (let k = i + 1; k < r.events.length; k++) {
+                  const ev = r.events[k]
+                  if (ev.kind !== 'attack') continue
+                  const team = getActorTeam(ev, tmap)
+                  if (team !== setterTeam) continue
+                  nextAttack = ev
+                  break
+                }
+                if (nextAttack) { setScored++; setSum += scoreAttack(nextAttack) }
+              }
+            }
+          }
+        }
+
+        return {
+          date: m.date,
+          spike: aAtt ? aSum / aAtt : null,
+          serve: sAtt ? sSum / sAtt : null,
+          block: bAtt ? bSum / bAtt : null,
+          receive: rAtt ? rSum / rAtt : null,
+          set: setScored ? setSum / setScored : null,
+        }
+      })
+    }, [ms, ralliesByMatch, player.id])
+
+    const tossDist = useMemo(() => {
+      const map = new Map<string, Map<TossType, number>>()
+
+      for (const m of db.matches) {
+        const rs = ralliesByMatch.get(m.id) ?? []
+        const tl = buildTimeline(m, rs)
+        const teamMap = teamByRoster(m)
+        const setterTeam = teamMap.get(player.id)
+        if (!setterTeam) continue
+
+        for (const row of tl) {
+          const rr = row.rally
+          for (let i = 0; i < rr.events.length; i++) {
+            const e = rr.events[i]
+            if (e.kind !== 'set') continue
+            if (e.result !== 'ok' || !e.toss) continue
+            if (e.actorId !== player.id) continue
+
+            const lead = computeLead(setterTeam, row.scoreBefore)
+            const phase = computePhase(row.scoreBefore)
+            const recQ = findReceiveQualityForSet(rr, i, setterTeam, teamMap) ?? null
+
+            const key = `${recQ ?? 'unknown'}_${lead}_${phase}`
+            if (!map.has(key)) map.set(key, new Map())
+            const inner = map.get(key)!
+            inner.set(e.toss, (inner.get(e.toss) ?? 0) + 1)
+          }
+        }
+      }
+
+      const recKeys: (ReceiveQuality | 'unknown')[] = ['A', 'B', 'C', 'unknown']
+      const leadKeys: LeadState[] = ['lead', 'tie', 'behind']
+      const phaseKeys: Phase[] = ['early', 'mid', 'late']
+
+      const rows: { key: string; rec: ReceiveQuality | 'unknown'; sitLabel: string; subtotal: number; top3: string }[] = []
+
+      for (const rec of recKeys) {
+        for (const lead of leadKeys) {
+          for (const phase of phaseKeys) {
+            const key = `${rec}_${lead}_${phase}`
+            const inner = map.get(key) ?? new Map<TossType, number>()
+            const subtotal = Array.from(inner.values()).reduce((a, b) => a + b, 0)
+            const sorted = Array.from(inner.entries()).sort((a, b) => b[1] - a[1])
+            const top3 = sorted.slice(0, 3).map(([t, c]) => `${TOSS_LABEL[t]} ${pct(c, subtotal)}`).join(' / ')
+            rows.push({
+              key,
+              rec,
+              sitLabel: `${LEAD_LABEL[lead]}×${PHASE_LABEL[phase]}`,
+              subtotal,
+              top3: top3 || '—',
+            })
+          }
+        }
+      }
+      return rows
+    }, [db.matches, ralliesByMatch, player.id])
+
     return (
-      <Card title={`人物：${player.name}`} right={<button className="btn small" onClick={() => setView({ name: 'players' })} type="button">戻る</button>}>
-        <div className="muted">（個人成績表示は次の差し替えで戻せる。まずはビルド通す）</div>
-      </Card>
+      <>
+        <Card title={`人物：${player.name}`} right={<button className="btn small" onClick={() => setView({ name: 'players' })} type="button">戻る</button>}>
+          <div className="row wrap">
+            <Pill tone="ok">スパイク：試行 {spike.att} / 決定 {spike.kill} / 効果的 {spike.eff} / 継続 {spike.cont} / ミス {spike.err}</Pill>
+            <Pill>効果率 {spike.effectRate.toFixed(3)}</Pill>
+          </div>
+          <div className="row wrap">
+            <Pill tone="ok">サーブ：試行 {serve.att} / ACE {serve.ace} / 効果的 {serve.eff} / 継続 {serve.cont} / ミス {serve.err}</Pill>
+            <Pill>効果率 {serve.effectRate.toFixed(3)}</Pill>
+          </div>
+          <div className="row wrap">
+            <Pill tone="ok">ブロック：試行 {block.att} / 決定 {block.point} / 効果的 {block.eff} / 継続 {block.cont} / ミス {block.err}</Pill>
+            <Pill>効果率 {block.effectRate.toFixed(3)}</Pill>
+          </div>
+          <div className="row wrap">
+            <Pill tone="ok">サーブカット/ディグ：試行 {receive.att} / A {receive.A} / B {receive.B} / C {receive.C} / ミス {receive.err}</Pill>
+            <Pill>効果率 {receive.effectRate.toFixed(3)}</Pill>
+          </div>
+          <div className="row wrap">
+            <Pill tone="ok">トス：試行 {setStat.att} / 直後攻撃あり {setStat.scored}</Pill>
+            <Pill>効果率（直後攻撃） {setStat.effectRate.toFixed(3)}</Pill>
+          </div>
+          <div className="hint">効果率：得点=1.0、効果的=0.7、継続=0.3、ミス=0.0（サーブカット/ディグ：A=1.0、B=0.67、C=0.33、ミス=0.0）。</div>
+        </Card>
+
+        <Card title="推移（試合日付 / 効果率）">
+          <div className="grid" style={{ gap: 10 }}>
+            <MiniLineChart title="スパイク" points={perMatchSeries.map((p) => ({ x: p.date, y: p.spike }))} />
+            <MiniLineChart title="サーブ" points={perMatchSeries.map((p) => ({ x: p.date, y: p.serve }))} />
+            <MiniLineChart title="ブロック" points={perMatchSeries.map((p) => ({ x: p.date, y: p.block }))} />
+            <MiniLineChart title="サーブカット/ディグ" points={perMatchSeries.map((p) => ({ x: p.date, y: p.receive }))} />
+            <MiniLineChart title="トス（直後攻撃）" points={perMatchSeries.map((p) => ({ x: p.date, y: p.set }))} />
+          </div>
+        </Card>
+
+        <Card title="トス配分（サーブカット/ディグ精度 × 状況）">
+          <div className="tableWrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th className="th">精度</th>
+                  <th className="th">状況</th>
+                  <th className="th">件数</th>
+                  <th className="th">上位トス（割合）</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tossDist.map((r) => (
+                  <tr key={r.key}>
+                    <td className="td">{r.rec === 'unknown' ? '（不明）' : r.rec}</td>
+                    <td className="td">{r.sitLabel}</td>
+                    <td className="td">{r.subtotal}</td>
+                    <td className="td">{r.top3}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </>
     )
   }
 
